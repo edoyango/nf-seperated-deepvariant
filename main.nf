@@ -5,11 +5,10 @@ process GENERATE_COMMANDS {
     label "process_single"
     cpus 1
     memory "1 GB"
+    executor "local"
 
     input:
-    each model_type
-    each regions
-    each num_shards
+    each deepvariant_params
     tuple val(meta),
           path(bam),
           path(bam_bai),
@@ -30,13 +29,14 @@ process GENERATE_COMMANDS {
     # get commands and pipe to file
     run_deepvariant \\
         --dry_run \\
-        --model_type "${model_type}" \\
+        --model_type "${deepvariant_params.model_type}" \\
         --ref "${ref}" \\
         --reads "${bam}" \\
-        --regions "${regions}" \\
+        --regions "${deepvariant_params.regions}" \\
         --output_vcf "${meta.id}.vcf" \\
-        --num_shards ${num_shards} \\
+        --num_shards ${deepvariant_params.num_shards} \\
         --intermediate_results_dir . \\
+        --output_vcf "${meta.id}.vcf.gz" \\
         | grep time > cmds.sh
     
     # split commands
@@ -51,11 +51,11 @@ process MAKE_EXAMPLES {
 
     tag "${meta.id}"
     container "google/deepvariant:1.5.0-gpu"
-    cpus "$num_shards"
-    memory "50 GB"
+    cpus "${deepvariant_params.num_shards}"
+    memory "16 GB"
 
     input:
-    each num_shards
+    each deepvariant_params
     tuple val(meta),
           path(bam), 
           path(bam_bai), 
@@ -85,9 +85,9 @@ process GPU_PART {
     
     tag "${meta.id}"
     container "google/deepvariant:1.5.0-gpu"
-    cpus 24
-    memory "50 GB"
-    clusterOptions "--gres gpu:1"
+    cpus 12
+    memory "24 GB"
+    clusterOptions "--gres gpu:1 --qos bonus"
     queue "gpuq"
 
     input:
@@ -106,7 +106,7 @@ process GPU_PART {
           path(bam_bai),
           path(ref),
           path(ref_fai),
-          path("*.vcf")
+          path("${meta.id}.vcf.gz")
     
     script:
     """
@@ -117,32 +117,29 @@ process GPU_PART {
 workflow seperated_deepvariant {
 
     take:
-        samples_bam // channel of aligned bams of type tuple([id, ...], bam, bai)
-        ref // channel of reference of type tuple([...], ref, fai)
-        model_type // val channel indicating model type for deepvariant
-        regions // val channel indicating regions for deepvariant
-        num_shards
+        deepvariant_params
+        reads
+        ref
     main:
         // combine channels and feed into deepvariant
-        samples_bam
+        reads
             .combine(ref.map{tuple(it[1], it[2])})
             .set {ch_dv_input}
 
-        ch_cmds = GENERATE_COMMANDS(model_type, regions, num_shards, ch_dv_input)
-        ch_examples = MAKE_EXAMPLES(num_shards, ch_cmds)
-        results = GPU_PART(ch_examples)
+        ch_cmds = GENERATE_COMMANDS(deepvariant_params, ch_dv_input)
+        MAKE_EXAMPLES(deepvariant_params, ch_cmds)
+            | GPU_PART
+            | set{results}
     emit:
         results
 }
 
 workflow {
-    ch_model_type = channel.from("ONT_R104")
-    ch_regions = channel.from("chrX")
-    ch_num_shards = channel.from(24)
-    ch_bam = channel.fromPath("/vast/projects/Panepigenome/SkewX_pipeline_devel/SkewX-ed/test-data/nsc_10e6-15e6.bam")
-    ch_bai = channel.fromPath("/vast/projects/Panepigenome/SkewX_pipeline_devel/SkewX-ed/test-data/nsc_10e6-15e6.bam.bai")
-    ch_ref = channel.fromPath("/vast/projects/Panepigenome/SkewX_pipeline_devel/SkewX-ed/test-data/GRCm38.primary_assembly.genome.fa")
-    ch_fai = channel.fromPath("/vast/projects/Panepigenome/SkewX_pipeline_devel/SkewX-ed/test-data/GRCm38.primary_assembly.genome.fa.fai")
+    ch_dv_args = channel.from([model_type: "ONT_R104", regions: "chrX", num_shards: 24])
+    ch_bam = channel.fromPath("${projectDir}/nsc_35e6-45e6.bam")
+    ch_bai = channel.fromPath("${projectDir}/nsc_35e6-45e6.bam.bai")
+    ch_ref = channel.fromPath("${projectDir}/GRCm38.primary_assembly.genome.fa")
+    ch_fai = channel.fromPath("${projectDir}/GRCm38.primary_assembly.genome.fa.fai")
 
     ch_samples = ch_bam
         .map{tuple([id: "test", sample: "test-sample"], it)}
@@ -150,5 +147,5 @@ workflow {
     ch_ref = ch_ref
         .map{tuple([id: "test-ref"], it)}
         .combine(ch_fai)
-    seperated_deepvariant(ch_samples, ch_ref, ch_model_type, ch_regions, ch_num_shards)
+    seperated_deepvariant(ch_dv_args, ch_samples, ch_ref)
 }
