@@ -8,7 +8,7 @@ process GENERATE_COMMANDS {
     executor "local"
 
     input:
-    each deepvariant_params
+    each dv_args
     tuple val(meta),
           path(bam),
           path(bam_bai),
@@ -25,18 +25,22 @@ process GENERATE_COMMANDS {
           path("dv-call-variants-and-postprocess.sh")
 
     script:
+    dv_opt_call_variants_extra_args = dv_args.call_variants_extra_args ? "--call_variants_extra_args ${dv_args.call_variants_extra_args}" : ""
+    dv_opt_make_examples_extra_args = dv_args.make_examples_extra_args ? "--make_examples_extra_args ${dv_args.make_examples_extra_args}" : ""
+    dv_opt_postprocess_variants_extra_args = dv_args.postprocess_variants_extra_args ? "--postprocess_variants_extra_args ${dv_args.postprocess_variants_extra_args}" : ""
+    dv_opt_model_type = dv_args.model_type ? "--model_type ${dv_args.model_type}" : ""
+    dv_opt_regions = dv_args.regions ? "--regions ${dv_args.regions}" : ""
+    dv_opt_num_shards = dv_args.num_shards ? "--num_shards ${dv_args.num_shards}" : ""
     """
     # get commands and pipe to file
     run_deepvariant \\
         --dry_run \\
-        --model_type "${deepvariant_params.model_type}" \\
         --ref "${ref}" \\
         --reads "${bam}" \\
-        --regions "${deepvariant_params.regions}" \\
-        --output_vcf "${meta.id}.vcf" \\
-        --num_shards ${deepvariant_params.num_shards} \\
         --intermediate_results_dir . \\
         --output_vcf "${meta.id}.vcf.gz" \\
+        ${dv_opt_model_type} ${dv_opt_regions} ${dv_opt_num_shards} \\
+        ${dv_opt_call_variants_extra_args} ${dv_opt_make_examples_extra_args} ${dv_opt_postprocess_variants_extra_args} \\
         | grep time > cmds.sh
     
     # split commands
@@ -51,11 +55,11 @@ process MAKE_EXAMPLES {
 
     tag "${meta.id}"
     container "google/deepvariant:1.5.0-gpu"
-    cpus "${deepvariant_params.num_shards}"
-    memory "16 GB"
+    cpus "${dv_args.num_shards ? dv_args.num_shards : 1}"
+    memory "32 GB"
 
     input:
-    each deepvariant_params
+    each dv_args
     tuple val(meta),
           path(bam), 
           path(bam_bai), 
@@ -134,18 +138,69 @@ workflow seperated_deepvariant {
         results
 }
 
-workflow {
-    ch_dv_args = channel.from([model_type: "ONT_R104", regions: "chrX", num_shards: 24])
-    ch_bam = channel.fromPath("${projectDir}/nsc_35e6-45e6.bam")
-    ch_bai = channel.fromPath("${projectDir}/nsc_35e6-45e6.bam.bai")
-    ch_ref = channel.fromPath("${projectDir}/GRCm38.primary_assembly.genome.fa")
-    ch_fai = channel.fromPath("${projectDir}/GRCm38.primary_assembly.genome.fa.fai")
+// set params to a falsey default value
+params.model_type = ''
+params.regions = ''
+params.num_shards = ''
+params.make_examples_extra_args = ''
+params.call_variants_extra_args = ''
+params.postprocess_variants_extra_args = ''
+params.bams_dir = ''
+params.ref = ''
 
-    ch_samples = ch_bam
-        .map{tuple([id: "test", sample: "test-sample"], it)}
-        .combine(ch_bai)
-    ch_ref = ch_ref
-        .map{tuple([id: "test-ref"], it)}
-        .combine(ch_fai)
+def helpMessage() {
+    log.info"""
+    Wrapper pipeline around Google GPU DeepVariant run_deepvariant script.
+
+    Usage: 
+        nextflow run main.nf --bams_dir <path> --ref <path> [options]
+
+    Required Arguments:
+        --bams_dir: Aligned, sorted, indexed BAM file containing the reads we
+          want to call. Should be aligned to a reference genome compatible with --ref.
+        --ref: Genome reference to use. Must have an associated FAI index as
+          well. Supports text or gzipped references. Should match the reference used
+          to align the BAM file provided to --reads.
+        
+    Optional Arguments:
+        --call_variants_extra_args: A comma-separated list of flag_name=flag_value.
+          "flag_name" has to be valid flags for call_variants.py. If the flag_value is
+          boolean, it has to be flag_name=true or flag_name=false.
+        --make_examples_extra_args: A comma-separated list of flag_name=flag_value.
+          "flag_name" has to be valid flags for make_examples.py. If the flag_value is
+          boolean, it has to be flag_name=true or flag_name=false.
+        --num_shards: Number of shards for make_examples step.
+          (default: '1')
+          (an integer)
+        --postprocess_variants_extra_args: A comma-separated list of
+          flag_name=flag_value. "flag_name" has to be valid flags for
+          postprocess_variants.py. If the flag_value is boolean, it has to be
+          flag_name=true or flag_name=false.
+        --regions: Space-separated list of regions we want to process.
+          Elements can be region literals (e.g., chr20:10-20) or paths to BED/BEDPE
+          files.""".stripIndent()
+
+}
+
+workflow {
+
+    if (params.help) {
+        helpMessage()
+        exit 0
+    }
+    ch_dv_args = channel.from(
+        [
+            model_type: params.model_type, 
+            regions: params.regions, 
+            num_shards: params.num_shards,
+            make_examples_extra_args: params.make_examples_extra_args,
+            call_variants_extra_args: params.call_variants_extra_args,
+            postprocess_variants_extra_args: params.postprocess_variants_extra_args
+        ]
+    )
+    ch_samples = channel.fromPath("${params.bams_dir}/*.bam")
+        .map{tuple([id: it.baseName], it, "${it}.bai")}
+    ch_ref = channel.fromPath("${params.ref}", checkIfExists: true)
+        .map{tuple([id: it.baseName], it, "${it}.fai")}
     seperated_deepvariant(ch_dv_args, ch_samples, ch_ref)
 }
