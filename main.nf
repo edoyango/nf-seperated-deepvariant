@@ -25,6 +25,7 @@ process GENERATE_COMMANDS {
           path("dv-call-variants-and-postprocess.sh")
 
     script:
+    // declare optional flags if present in dv_args
     dv_opt_call_variants_extra_args = dv_args.call_variants_extra_args ? "--call_variants_extra_args ${dv_args.call_variants_extra_args}" : ""
     dv_opt_make_examples_extra_args = dv_args.make_examples_extra_args ? "--make_examples_extra_args ${dv_args.make_examples_extra_args}" : ""
     dv_opt_postprocess_variants_extra_args = dv_args.postprocess_variants_extra_args ? "--postprocess_variants_extra_args ${dv_args.postprocess_variants_extra_args}" : ""
@@ -44,6 +45,7 @@ process GENERATE_COMMANDS {
         | grep time > cmds.sh
     
     # split commands
+    # post process doesn't use GPU, but is inexpensive, so is lumped with call variants.
     head -n 1 cmds.sh > dv-make-examples.sh
     tail -n 2 cmds.sh > dv-call-variants-and-postprocess.sh
     chmod +x dv-make-examples.sh dv-call-variants-and-postprocess.sh
@@ -91,8 +93,9 @@ process GPU_PART {
     container "google/deepvariant:1.5.0-gpu"
     cpus 12
     memory "24 GB"
-    clusterOptions "--gres gpu:1 --qos bonus"
     queue "gpuq"
+    publishDir "${params.outdir}", pattern: "*.html", mode: "copy" // only save the report
+    clusterOptions '--gres gpu:A30:1'
 
     input:
     tuple val(meta),
@@ -110,7 +113,9 @@ process GPU_PART {
           path(bam_bai),
           path(ref),
           path(ref_fai),
-          path("${meta.id}.vcf.gz")
+          path("${meta.id}.vcf.gz"),
+          path("${meta.id}.vcf.gz.tbi"),
+          path("${meta.id}.visual_report.html")
     
     script:
     """
