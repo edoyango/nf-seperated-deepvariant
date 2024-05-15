@@ -1,0 +1,11 @@
+**.nextflow*
+**.out
+core.*
+*.log
+*.bam
+*.bai
+*.vcf
+*.html
+*.gz
+*.fq
+*.fai
