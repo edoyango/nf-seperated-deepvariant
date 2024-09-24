@@ -4,6 +4,8 @@ A pipeline for running Google's DeepVariant GPU container in seperate steps. The
 ensure that CPU-only steps (in particular, the `make_examples` step) run on CPU-only nodes in a 
 Slurm environment.
 
+Is setup to run on WEHI's HPC infrastructure.
+
 ## Nextflow
 
 `main.nf` contains the entirety of the pipeline, including processes. This can be run directly:
